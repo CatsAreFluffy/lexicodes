@@ -178,7 +178,7 @@ class x4a_icx_zmm_block {
         // printf("4\n");
         // printzmm(a2);
         // other words need to be decreased by 32
-        a2 = _mm512_mask_subs_epu8(a2, big, a, _mm512_set1_epi8(32));
+        a2 = _mm512_mask_sub_epi8(a2, big, a, _mm512_set1_epi8(32));
         // printf("permdec output\n");
         // printzmm(a2);
         return a2;
@@ -216,8 +216,8 @@ class x4a_icx_zmm_block {
         __mmask64 nkeeps = _mm512_cmplt_epu8_mask(diff, _mm512_set1_epi8(64));
         __mmask64 neqs = _mm512_cmpge_epu8_mask(diff, _mm512_set1_epi8(32));
         __m512i hi2 = _mm512_add_epi8(hi, _mm512_set1_epi8(0b00000100));
-        // __m512i decbase = _mm512_subs_epu8(mm512_iota_epi8(), _mm512_set1_epi8(20));
         // could also be an and/subs
+        // __m512i decbase = _mm512_subs_epu8(_mm512_and_si512(mm512_iota_epi8(), _mm512_set1_epi8(31)), _mm512_set1_epi8(20));
         // __m512i lo2 = _mm512_mask_permutexvar_epi8(lo, neqs, lo, decbase);
         __m512i lo2 = _mm512_mask_subs_epu8(lo, neqs, _mm512_and_si512(lo, _mm512_set1_epi8(31)), _mm512_set1_epi8(20));
         // copy offset to base, then xor bits of base with the top bit
@@ -712,6 +712,8 @@ template<typename block> uint64_t slice(uint32_t dist, uint64_t gen, uint64_t sl
         // hi.print();
         lows[i ^ block_offset] = lo;
         highs[i] = hi;
+        // lo.store(&lows[i ^ block_offset]);
+        // hi.store(&highs[i]);
         // printf("haszero %08x %d\n", high_base + (i << block::entries_per_block_bits), hi.haszero());
         if(needzero && hi.haszero()){
             // printf("zerpos %08x %08x %08x %08x\n", high_base, (i << block::entries_per_block_bits), hi.zeropos(), high_base + (i << block::entries_per_block_bits) + hi.zeropos());
@@ -757,6 +759,7 @@ template<typename block> void findcode_thread(uint32_t dist, uint64_t gen, block
     uint64_t high_base = (1ull << 63) >> _lzcnt_u64(gen);
     uint64_t high_base_blocks = high_base >> block::entries_per_block_bits;
     uint64_t slices = 0;
+    uint64_t this_gen = std::numeric_limits<uint64_t>::max();
     for(;;){
         uint64_t this_slice = next_slice->fetch_add(1, std::memory_order_relaxed);
         // printf("thread %08lx %ld\n", gen, this_slice);
@@ -765,22 +768,28 @@ template<typename block> void findcode_thread(uint32_t dist, uint64_t gen, block
         uint64_t this_slice_entries = this_slice_blocks << block::entries_per_block_bits;
         if(this_slice_blocks >= high_base_blocks){
             // 5000
-            if(gen == 0x2d0a0c29){
-                printf("Thread slices: %lu\n", slices);
+            // if(gen == 0x2d0a0c29){
+            if((gen & (gen - 1)) == 0){
+                // printf("Thread slices: %lu\n", slices);
+            }
+            // atomic_min plz
+            uint64_t cur_next_gen = next_gen->load(std::memory_order_relaxed);
+            while(cur_next_gen > this_gen){
+                next_gen->compare_exchange_weak(cur_next_gen, this_gen, std::memory_order_relaxed, std::memory_order_relaxed);
             }
             return;
         }
         uint64_t highs_index = high_base_blocks + this_slice_blocks;
         uint64_t lows_index = ((gen >> block::entries_per_block_bits) ^ highs_index) & (-blocks);
         // printf("thread %08lx %ld h %08lx l %08lx\n", gen, this_slice, highs_index, lows_index);
-        uint64_t this_gen = slice<block>(dist, gen, blocks, &area[lows_index], lows_index << block::entries_per_block_bits, &area[highs_index], highs_index << block::entries_per_block_bits);
-        // atomic_min plz
-        uint64_t cur_next_gen = next_gen->load(std::memory_order_relaxed);
-        while(cur_next_gen > this_gen){
-            next_gen->compare_exchange_weak(cur_next_gen, this_gen, std::memory_order_relaxed, std::memory_order_relaxed);
-        }
+        // uint64_t this_gen = slice<block>(dist, gen, blocks, &area[lows_index], lows_index << block::entries_per_block_bits, &area[highs_index], highs_index << block::entries_per_block_bits);
+        this_gen = std::min(this_gen, slice<block>(dist, gen, blocks, &area[lows_index], lows_index << block::entries_per_block_bits, &area[highs_index], highs_index << block::entries_per_block_bits));
         slices++;
     }
+}
+
+void lol(){
+
 }
 
 template<typename block> std::vector<uint64_t> findcode2(uint32_t dist, uint32_t codim, uint64_t blocks_per_thread, uint64_t max_threads){
@@ -831,6 +840,10 @@ template<typename block> std::vector<uint64_t> findcode2(uint32_t dist, uint32_t
         // printf("a-1\n");
         std::thread threads[max_threads];
         // printf("a\n");
+        std::chrono::time_point<std::chrono::steady_clock> start, end;
+        if((gen & (gen - 1)) == 0){
+            start = std::chrono::steady_clock::now();
+        }
         // uint64_t thread_count = std::min(max_threads, )
         for(uint32_t i = 0; i < max_threads; i++){
             threads[i] = std::thread(findcode_thread<block>, dist, gen, area, blocks_per_thread, &next_slice, &next_gen);
@@ -838,6 +851,18 @@ template<typename block> std::vector<uint64_t> findcode2(uint32_t dist, uint32_t
         }
         for(uint32_t i = 0; i < max_threads; i++){
             threads[i].join();
+        }
+        for(uint32_t i = 0; i < max_threads; i++){
+            threads[i] = std::thread(lol);
+            // printf("b %d\n", i);
+        }
+        for(uint32_t i = 0; i < max_threads; i++){
+            threads[i].join();
+        }
+        if((gen & (gen - 1)) == 0){
+            end = std::chrono::steady_clock::now();
+            uint64_t check_bits = 64 - _lzcnt_u64(gen);
+            printf("%2.3f ms for %lu check bits\n", ((double)std::chrono::duration_cast<std::chrono::microseconds>(end - start).count()) / (1000), check_bits);
         }
         gen = next_gen.load(std::memory_order_relaxed);
         gens.push_back(gen);
@@ -865,17 +890,17 @@ int main(){
     // printf("hi\n");
     // std::vector<uint64_t> gens = findcode2<x4a_skx_zmm_block>(5, 25);
     std::chrono::time_point<std::chrono::steady_clock> start, end;
-    uint64_t thread_counts[1] = {16};
-    for(int j = 0; j < 1; j++){
-        printf("%lu threads:\n", thread_counts[j]);
-        for(int k = 8; k < 20; k++){
-            printf("%u blocks per slice\n", 1 << k);
+    uint64_t thread_counts[] = {8, 192};
             for(int i = 30; i < 31; i++){
+    for(int j = 0; j < 2; j++){
+        printf("%lu threads:\n", thread_counts[j]);
+        for(int k = 12; k < 13; k++){
+            printf("%u blocks per slice\n", 1 << k);
                 start = std::chrono::steady_clock::now();
                 std::vector<uint64_t> gens = findcode2<x4a_icx_zmm_block>(5, i, 1 << k, thread_counts[j]);
                 end = std::chrono::steady_clock::now();
                 printf("Generators for codim %u: %zu\n", i, gens.size());
-                printf("%2.4f ms\n", ((double)std::chrono::duration_cast<std::chrono::microseconds>(end - start).count()) / (1000));
+                printf("%2.3f ms\n", ((double)std::chrono::duration_cast<std::chrono::microseconds>(end - start).count()) / (1000));
             }
         }
     }
