@@ -1,4 +1,5 @@
 #include <atomic>
+#include <barrier>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -788,17 +789,42 @@ template<typename block> void findcode_thread(uint32_t dist, uint64_t gen, block
     }
 }
 
-void lol(){
-
+template<typename block, class blah> void findcode_thread2(uint32_t dist, uint32_t codim, uint64_t* gen, std::barrier<blah> sync_point, block* area, uint64_t blocks_per_slice, std::atomic_uint64_t* next_slice, std::atomic_uint64_t* next_gen){
+    while(*gen < (1ull << codim)){
+        uint64_t local_gen = *gen;
+        uint64_t high_base_entry = (1ull << 63) >> _lzcnt_u64(local_gen);
+        uint64_t high_base_block = high_base_entry >> block::entries_per_block_bits;
+        uint64_t slices = 0;
+        uint64_t local_next_gen = std::numeric_limits<uint64_t>::max();
+        for(;;){
+            uint64_t this_slice = next_slice->fetch_add(1, std::memory_order_relaxed);
+            uint64_t slice_first_block = this_slice * blocks_per_slice;
+            uint64_t slice_first_entry = slice_first_block >> block::entries_per_block_bits;
+            if(slice_first_block >= high_base_block){
+                break;
+            }
+            uint64_t high_block_index = high_base_block + slice_first_block;
+            uint64_t low_block_index = ((local_gen >> block::entries_per_block_bits) ^ high_block_index) & (-blocks_per_slice);
+            local_next_gen = std::min(local_next_gen, slice<block>(dist, local_gen, blocks_per_slice, &area[low_block_index], low_block_index << block::entries_per_block_bits, &area[high_block_index], high_block_index << block::entries_per_block_bits));
+            slices++;
+        }
+        // atomic_min plz
+        uint64_t cur_next_gen = next_gen->load(std::memory_order_relaxed);
+        while(cur_next_gen > local_next_gen){
+            next_gen->compare_exchange_weak(cur_next_gen, local_next_gen, std::memory_order_relaxed, std::memory_order_relaxed);
+        }
+        sync_point.arrive_and_wait();
+    }
 }
 
-template<typename block> std::vector<uint64_t> findcode2(uint32_t dist, uint32_t codim, uint64_t blocks_per_thread, uint64_t max_threads){
+template<typename block> std::vector<uint64_t> findcode2(uint32_t dist, uint32_t codim, uint64_t blocks_per_slice, uint64_t max_threads){
     std::vector<uint64_t> gens;
     block t = first_block<block>(dist, gens);
     for(size_t i = 1; i < gens.size(); i++){
         // printf("i %05zu v %016lx\n", i, gens[i]);
         fflush(stdout);
     }
+    // todo: remove some gens if codim<epbb
     if(block::entries_per_block_bits >= codim){
         return gens;
     }
@@ -811,7 +837,7 @@ template<typename block> std::vector<uint64_t> findcode2(uint32_t dist, uint32_t
     // printf("a-3+1-1\n");
     area[0] = t;
     uint64_t gen = (1 << block::entries_per_block_bits);
-    const uint64_t entries_per_thread = blocks_per_thread << block::entries_per_block_bits;
+    const uint64_t entries_per_thread = blocks_per_slice << block::entries_per_block_bits;
     const uint64_t max_st_entries = std::min((uint64_t)(1ull << codim), entries_per_thread);
     while(gen < max_st_entries){
         uint64_t high_base = (1ull << 63) >> _lzcnt_u64(gen);
@@ -829,49 +855,104 @@ template<typename block> std::vector<uint64_t> findcode2(uint32_t dist, uint32_t
         }
     }
     // printf("a-2\n");
-    while(gen < (1ull << codim)){
-        // uint64_t high_base = (1ull << 63) >> _lzcnt_u64(gen);
-        // uint64_t high_base_blocks = high_base >> block::entries_per_block_bits;
-        // uint64_t base_mask = - (1ull << entries_per_thread);
-        uint64_t last_gen = gen;
-        // gen = std::min(slice<block>(dist, gen, high_base_blocks, area, 0, &area[high_base_blocks], high_base), high_base << 1);
-        std::atomic_uint64_t next_slice = {0};
-        std::atomic_uint64_t next_gen = {(1ull << 63) >> (_lzcnt_u64(gen) - 1)};
-        // printf("a-1\n");
-        std::thread threads[max_threads];
-        // printf("a\n");
-        std::chrono::time_point<std::chrono::steady_clock> start, end;
+    // while(gen < (1ull << codim)){
+    //     // uint64_t high_base = (1ull << 63) >> _lzcnt_u64(gen);
+    //     // uint64_t high_base_blocks = high_base >> block::entries_per_block_bits;
+    //     // uint64_t base_mask = - (1ull << entries_per_thread);
+    //     uint64_t last_gen = gen;
+    //     // gen = std::min(slice<block>(dist, gen, high_base_blocks, area, 0, &area[high_base_blocks], high_base), high_base << 1);
+    //     std::atomic_uint64_t next_slice = {0};
+    //     std::atomic_uint64_t next_gen = {(1ull << 63) >> (_lzcnt_u64(gen) - 1)};
+    //     // printf("a-1\n");
+    //     std::thread threads[max_threads];
+    //     // printf("a\n");
+    //     std::chrono::time_point<std::chrono::steady_clock> start, end;
+    //     if((gen & (gen - 1)) == 0){
+    //         start = std::chrono::steady_clock::now();
+    //     }
+    //     // uint64_t thread_count = std::min(max_threads, )
+    //     for(uint32_t i = 0; i < max_threads; i++){
+    //         threads[i] = std::thread(findcode_thread<block>, dist, gen, area, blocks_per_thread, &next_slice, &next_gen);
+    //         // printf("b %d\n", i);
+    //     }
+    //     for(uint32_t i = 0; i < max_threads; i++){
+    //         threads[i].join();
+    //     }
+    //     if((gen & (gen - 1)) == 0){
+    //         end = std::chrono::steady_clock::now();
+    //         uint64_t check_bits = 64 - _lzcnt_u64(gen);
+    //         printf("%2.3f ms for %lu check bits\n", ((double)std::chrono::duration_cast<std::chrono::microseconds>(end - start).count()) / (1000), check_bits);
+    //     }
+    //     gen = next_gen.load(std::memory_order_relaxed);
+    //     gens.push_back(gen);
+    //     // printf("i %05lu v %016lx\n", gens.size() - 1, gen);
+    //     fflush(stdout);
+    //     if(last_gen >= gen){
+    //         printf("sussy 2 %08lx %08lx\n", last_gen, gen);
+    //         return gens;
+    //     }
+    // }
+    std::atomic_uint64_t next_slice = {0};
+    std::atomic_uint64_t next_gen = {(1ull << 63) >> (_lzcnt_u64(gen) - 1)};
+    std::chrono::time_point<std::chrono::steady_clock> start, end;
+    start = std::chrono::steady_clock::now();
+    uint64_t last_gen = 0;
+    auto update_gen = [&start, &end, &last_gen, &gen, &gens, &next_slice, &next_gen](){
+        last_gen = gen;
+        gen = next_gen.load();
         if((gen & (gen - 1)) == 0){
             start = std::chrono::steady_clock::now();
         }
-        // uint64_t thread_count = std::min(max_threads, )
-        for(uint32_t i = 0; i < max_threads; i++){
-            threads[i] = std::thread(findcode_thread<block>, dist, gen, area, blocks_per_thread, &next_slice, &next_gen);
-            // printf("b %d\n", i);
-        }
-        for(uint32_t i = 0; i < max_threads; i++){
-            threads[i].join();
-        }
-        for(uint32_t i = 0; i < max_threads; i++){
-            threads[i] = std::thread(lol);
-            // printf("b %d\n", i);
-        }
-        for(uint32_t i = 0; i < max_threads; i++){
-            threads[i].join();
-        }
-        if((gen & (gen - 1)) == 0){
+        if((last_gen & (last_gen - 1)) == 0){
             end = std::chrono::steady_clock::now();
             uint64_t check_bits = 64 - _lzcnt_u64(gen);
             printf("%2.3f ms for %lu check bits\n", ((double)std::chrono::duration_cast<std::chrono::microseconds>(end - start).count()) / (1000), check_bits);
         }
-        gen = next_gen.load(std::memory_order_relaxed);
         gens.push_back(gen);
-        // printf("i %05lu v %016lx\n", gens.size() - 1, gen);
-        fflush(stdout);
-        if(last_gen >= gen){
-            printf("sussy 2 %08lx %08lx\n", last_gen, gen);
-            return gens;
+        next_gen.store((1ull << 63) >> (_lzcnt_u64(gen) - 1));
+        next_slice.store(0);
+    };
+    std::barrier<decltype(update_gen)> sync_point(max_threads, update_gen);
+    auto work = [dist, codim, &gen, &sync_point, area, blocks_per_slice, &next_slice, &next_gen](){
+        while(gen < (1ull << codim)){
+            uint64_t local_gen = gen;
+            uint64_t high_base_entry = (1ull << 63) >> _lzcnt_u64(local_gen);
+            uint64_t high_base_block = high_base_entry >> block::entries_per_block_bits;
+            uint64_t slices = 0;
+            uint64_t local_next_gen = std::numeric_limits<uint64_t>::max();
+            for(;;){
+                uint64_t this_slice = next_slice.fetch_add(1, std::memory_order_relaxed);
+                uint64_t slice_first_block = this_slice * blocks_per_slice;
+                uint64_t slice_first_entry = slice_first_block >> block::entries_per_block_bits;
+                if(slice_first_block >= high_base_block){
+                    break;
+                }
+                uint64_t high_block_index = high_base_block + slice_first_block;
+                uint64_t low_block_index = ((local_gen >> block::entries_per_block_bits) ^ high_block_index) & (-blocks_per_slice);
+                local_next_gen = std::min(local_next_gen, slice<block>(dist, local_gen, blocks_per_slice, &area[low_block_index], low_block_index << block::entries_per_block_bits, &area[high_block_index], high_block_index << block::entries_per_block_bits));
+                slices++;
+            }
+            // atomic_min plz
+            uint64_t cur_next_gen = next_gen.load(std::memory_order_relaxed);
+            while(cur_next_gen > local_next_gen){
+                next_gen.compare_exchange_weak(cur_next_gen, local_next_gen, std::memory_order_relaxed, std::memory_order_relaxed);
+            }
+            sync_point.arrive_and_wait();
         }
+    };
+    std::thread threads[max_threads];
+    for(uint32_t i = 0; i < max_threads; i++){
+        // template<typename block, class blah> void findcode_thread2(uint32_t dist, uint32_t codim, uint64_t& gen,
+        // std::barrier<blah> sync_point, block* area, uint64_t blocks_per_slice, std::atomic_uint64_t next_slice, std::atomic_uint64_t next_gen){
+        // template<typename block, class blah> void findcode_thread2(uint32_t dist, uint32_t codim, uint64_t& gen,
+        // std::barrier<blah> sync_point, block* area, uint64_t blocks_per_slice, std::atomic_uint64_t next_slice, std::atomic_uint64_t next_gen){
+        // template<typename block, class blah> void findcode_thread2(uint32_t dist, uint32_t codim, uint64_t* gen,
+        // std::barrier<blah> sync_point, block* area, uint64_t blocks_per_slice, std::atomic_uint64_t* next_slice, std::atomic_uint64_t* next_gen){
+        // threads[i] = std::thread(findcode_thread2<block, decltype(update_gen)>, dist, codim, &gen, sync_point, area, blocks_per_slice, &next_slice, &next_gen);
+        threads[i] = std::thread(work);
+    }
+    for(uint32_t i = 0; i < max_threads; i++){
+        threads[i].join();
     }
     munmap((void*)area, areasize);
     return gens;
@@ -894,7 +975,7 @@ int main(){
             for(int i = 30; i < 31; i++){
     for(int j = 0; j < 2; j++){
         printf("%lu threads:\n", thread_counts[j]);
-        for(int k = 12; k < 13; k++){
+        for(int k = 8; k < 16; k++){
             printf("%u blocks per slice\n", 1 << k);
                 start = std::chrono::steady_clock::now();
                 std::vector<uint64_t> gens = findcode2<x4a_icx_zmm_block>(5, i, 1 << k, thread_counts[j]);
