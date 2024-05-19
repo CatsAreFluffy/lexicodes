@@ -294,33 +294,6 @@ template <code_type ty> class x4a_icx_zmm_block {
                 // wonderful instruction
                 return (_mm_cvtsi128_si32(_mm_minpos_epu16(positionsx)) >> 8) & 255;
             }
-
-            // // generate self-orthogonal code
-            // uint8_t v[64];
-            // _mm512_storeu_epi8((void*)v, a);
-            // for(int i = 0; i < 64; i++){
-            //     uint8_t v2[16];
-            //     _mm_storeu_epi8((void*)v2, x4a_decompress(v[i]));
-            //     for(int j = 0; j < 4; j++){
-            //         if(!v2[j]){
-            //             int ret = i * 4 + j;
-            //             bool valid = (_mm_popcnt_u64(block_pos + ret) & 1 == 1);
-            //             for(size_t k = 0; k < gens.size(); k++){
-            //                 if((block_pos + ret == 0x1e1f)){
-            //                     printf("%zu %08lx %lx %lx %lx %lx\n", k, gens[k], block_pos + ret, _mm_popcnt_u64(gens[k]), _mm_popcnt_u64(block_pos + ret), _mm_popcnt_u64(gens[k] & (block_pos + ret)));
-            //                 }
-            //                 if((gens[k] & (gens[k] - 1)) != 0 && (_mm_popcnt_u64(gens[k] & (block_pos + ret)) & 1)){
-            //                     valid = false;
-            //                     break;
-            //                 }
-            //             }
-            //             if(valid){
-            //                 return ret;
-            //             }
-            //         }
-            //     }
-            // }
-            // return 256;
             case self_orthogonal: {
                 // generate self-orthogonal code minus parity bit
                 uint8_t v[64];
@@ -332,24 +305,12 @@ template <code_type ty> class x4a_icx_zmm_block {
                         if(!v2[j]){
                             int ret = i * 4 + j;
                             bool valid = true;
-                            // static int arrived = 0;
                             for(size_t k = 0; k < gens.size(); k++){
-                                // left side is parity of intersection except parity bit
-                                // right side is inverted parity of intersection at parity bit
-                                // if(!arrived && (block_pos + ret == (0x1e1f >> 1))){
-                                //     printf("%zu %08lx %lx %lx %lx %lx\n", k, gens[k], block_pos + ret, _mm_popcnt_u64(gens[k]), _mm_popcnt_u64(block_pos + ret), _mm_popcnt_u64(gens[k] & (block_pos + ret)));
-                                // }
-                                // if((gens[k] & (gens[k] - 1)) != 0 && (_mm_popcnt_u64(gens[k] & (block_pos + ret)) & 1) != ((_mm_popcnt_u64(gens[k]) | _mm_popcnt_u64(block_pos + ret)) & 1)){
                                 if((gens[k] & (gens[k] - 1)) != 0 && (_mm_popcnt_u64(add_parity(gens[k]) & add_parity(block_pos + ret)) & 1)){
                                     valid = false;
                                     break;
                                 }
                             }
-                            // if(!arrived && (block_pos + ret == (0x3e0f >> 1))){
-                            //     printf("%d\n", valid);
-                            //     arrived = 1;
-                            //     exit(0);
-                            // }
                             if(valid){
                                 return ret;
                             }
@@ -358,20 +319,6 @@ template <code_type ty> class x4a_icx_zmm_block {
                 }
                 return 256;
             }
-
-            // // printzmm(a);
-            // __mmask32 haszero = _mm512_cmplt_epu16_mask(a, _mm512_set1_epi16(32));
-            // // output of gen_zpos_table
-            // // __m512i table = gen_zpos_table();
-            // __m512i table = _mm512_setr_epi64(0x0000000000000000, 0x0001000000000000, 0x0002000200000000, 0x0001000000010000, 0x0000000100010000, 0x0003000200010000, 0x0003000200010000, 0x0003000200010000);
-            // __m512i positionsz = _mm512_mask_permutexvar_epi16(_mm512_set1_epi16(0x0100), haszero, a, table);
-            // positionsz = _mm512_add_epi16(positionsz, _mm512_slli_epi16(mm512_iota_epi16(), 2));
-            // // print(positionsz);
-            // __m256i positionsy = _mm256_min_epu16(_mm512_extracti32x8_epi32(positionsz, 0), _mm512_extracti32x8_epi32(positionsz, 1));
-            // __m128i positionsx = _mm_min_epu16(_mm256_extracti128_si256(positionsy, 0), _mm256_extracti128_si256(positionsy, 1));
-            // // print(positionsx);
-            // // wonderful instruction
-            // return _mm_cvtsi128_si32(_mm_minpos_epu16(positionsx));
         }
     }
     __m512i data;
@@ -484,7 +431,7 @@ template<typename block> uint64_t slice(uint32_t dist, uint64_t gen, uint64_t sl
     return next_gen;
 }
 
-template<typename block> std::vector<uint64_t> findcode2(uint32_t dist, uint32_t codim, uint64_t blocks_per_slice, uint64_t max_threads, bool print_gens, bool evenize, bool print_times){
+template<typename block> std::vector<uint64_t> findcode2(uint32_t dist, uint32_t codim, uint64_t max_blocks_per_slice, uint64_t max_threads, bool print_gens, bool evenize, bool print_times){
     std::vector<uint64_t> gens;
     block t = first_block<block>(dist, gens);
     auto print_gen = [print_gens, evenize](size_t i, uint64_t gen){
@@ -494,7 +441,7 @@ template<typename block> std::vector<uint64_t> findcode2(uint32_t dist, uint32_t
         }
     };
     if(print_gens){
-        for(size_t i = 1; i < gens.size(); i++){
+        for(size_t i = 0; i < gens.size(); i++){
             // printf("i %05zu v %016lx\n", i, gens[i]);
             // fflush(stdout);
             print_gen(i, gens[i]);
@@ -512,14 +459,16 @@ template<typename block> std::vector<uint64_t> findcode2(uint32_t dist, uint32_t
     block* area = (block*)mmap(0, areasize, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS|MAP_POPULATE, -1, 0);
     // printf("a-3+1-1\n");
     area[0] = t;
-    uint64_t gen = (1 << block::entries_per_block_bits);
-    const uint64_t entries_per_thread = blocks_per_slice << block::entries_per_block_bits;
+    uint64_t gen = (1 << block::entries_per_block_bits), last_gen = 0;
+    const uint64_t entries_per_thread = max_blocks_per_slice << block::entries_per_block_bits;
     const uint64_t max_st_entries = std::min((uint64_t)(1ull << codim), entries_per_thread);
+    std::chrono::time_point<std::chrono::steady_clock> start = std::chrono::steady_clock::now(), end;
     while(gen < max_st_entries){
         uint64_t high_base = (1ull << 63) >> _lzcnt_u64(gen);
         uint64_t high_base_blocks = high_base >> block::entries_per_block_bits;
         uint64_t last_gen = gen;
         // printf("a-3+1\n");
+        last_gen = gen;
         gen = std::min(slice<block>(dist, gen, high_base_blocks, area, 0, &area[high_base_blocks], high_base, gens), high_base << 1);
         // printf("a-3+2\n");
         gens.push_back(gen);
@@ -532,15 +481,32 @@ template<typename block> std::vector<uint64_t> findcode2(uint32_t dist, uint32_t
             printf("sussy 2 %08lx %08lx\n", last_gen, gen);
             return gens;
         }
+        if(print_times){
+            if((last_gen & (last_gen - 1)) == 0){
+                end = std::chrono::steady_clock::now();
+                uint64_t check_bits = 64 - _lzcnt_u64(last_gen);
+                printf("%2.3f ms per gen for %lu check bits\n", ((double)std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count()) / 1000000, check_bits);
+            }
+            if((gen & (gen - 1)) == 0){
+                start = std::chrono::steady_clock::now();
+            }
+        }
+    }
+    if(print_times){
+        printf("Starting multi-threaded phase\n");
     }
     std::atomic_uint64_t next_slice = {0};
     std::atomic_uint64_t next_gen = {(1ull << 63) >> (_lzcnt_u64(gen) - 1)};
-    std::chrono::time_point<std::chrono::steady_clock> start, end;
-    uint64_t last_gen = 0;
-    bool setstart = true;
-    auto update_gen = [&start, &end, &last_gen, &gen, &gens, &next_slice, &next_gen, &print_gen, print_times, &setstart](){
-        if(setstart){
-            setstart = false;
+    bool first_update = true;
+    // log2 of next power of 2 after max_threads
+    uint64_t max_threads_bits = (64 - _lzcnt_u64(max_threads - 1));
+    uint64_t even_blocks_per_slice = (1ull << 63) >> (_lzcnt_u64(gen) + block::entries_per_block_bits + max_threads_bits);
+    uint64_t blocks_per_slice = std::min(max_blocks_per_slice, even_blocks_per_slice);
+    // uint64_t blocks_per_slice = even_blocks_per_slice;
+    // uint64_t blocks_per_slice = max_blocks_per_slice;
+    auto update_gen = [&start, &end, &last_gen, &gen, &gens, &next_slice, &next_gen, &print_gen, print_times, &first_update, &blocks_per_slice, max_threads_bits, max_blocks_per_slice](){
+        if(first_update){
+            first_update = false;
             start = std::chrono::steady_clock::now();
             return;
         }
@@ -551,7 +517,7 @@ template<typename block> std::vector<uint64_t> findcode2(uint32_t dist, uint32_t
             if((last_gen & (last_gen - 1)) == 0){
                 end = std::chrono::steady_clock::now();
                 uint64_t check_bits = 64 - _lzcnt_u64(last_gen);
-                printf("%2.3f ms for %lu check bits\n", ((double)std::chrono::duration_cast<std::chrono::microseconds>(end - start).count()) / (1000), check_bits);
+                printf("%2.3f ms per gen for %lu check bits\n", ((double)std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count()) / 1000000, check_bits);
             }
             if((gen & (gen - 1)) == 0){
                 start = std::chrono::steady_clock::now();
@@ -568,11 +534,14 @@ template<typename block> std::vector<uint64_t> findcode2(uint32_t dist, uint32_t
         //     // }
         // }
         print_gen(gens.size() - 1, gen);
+        uint64_t even_blocks_per_slice = (1ull << 63) >> (_lzcnt_u64(gen) + block::entries_per_block_bits + max_threads_bits);
+        blocks_per_slice = std::min(max_blocks_per_slice, even_blocks_per_slice);
+        // blocks_per_slice = even_blocks_per_slice;
         next_gen.store((1ull << 63) >> (_lzcnt_u64(gen) - 1), std::memory_order_relaxed);
         next_slice.store(0, std::memory_order_relaxed);
     };
     std::barrier<decltype(update_gen)> sync_point(max_threads, update_gen);
-    auto work = [dist, codim, &gen, &sync_point, area, blocks_per_slice, &next_slice, &next_gen, &gens](){
+    auto work = [dist, codim, &gen, &sync_point, area, &blocks_per_slice, &next_slice, &next_gen, &gens](){
         sync_point.arrive_and_wait();
         while(gen < (1ull << codim)){
             uint64_t local_gen = gen;
@@ -612,7 +581,7 @@ template<typename block> std::vector<uint64_t> findcode2(uint32_t dist, uint32_t
     return gens;
 }
 
-int main(){
+int main(int argc, char** argv){
     // x4a_decompress(0x38);
     // for(int i = 0; i < 256; i++){
     //     if(!eq(x4a_decompress(i), x4a_decompress(x4a_compress(x4a_decompress(i))))){
@@ -624,15 +593,62 @@ int main(){
     // }
     // printf("hi\n");
     // std::vector<uint64_t> gens = findcode2<x4a_skx_zmm_block>(5, 25);
+    if(argc < 4){
+        fprintf(stderr, "Usage: %s distance code_type codimension\n", argc ? argv[0] : "[this_program]");
+        return 1;
+    }
+    uint32_t distance, codim;
+    code_type ty;
+    bool evenize = false;
+    int err = sscanf(argv[1], "%u", &distance);
+    if(err != 1 || (distance < 3) || (distance > 10)){
+        fprintf(stderr, "Invalid distance\n");
+        return 1;
+    }
+    switch(argv[2][0]){
+        // any
+        case 'a':
+            ty = any;
+            break;
+        // self-orthogonal
+        case 's':
+            ty = self_orthogonal;
+            break;
+        default:
+            fprintf(stderr, "Invalid code type\n");
+            return 1;
+    }
+    err = sscanf(argv[3], "%u", &codim);
+    if(err != 1){
+        fprintf(stderr, "Invalid codimension\n");
+        return 1;
+    }
+    // mock turtle theorem
+    if((distance & 1) == 0){
+        distance -= 1;
+        codim -= 1;
+        evenize = true;
+    }
+    const bool print_gens = false;
+    const bool print_times = true;
     std::chrono::time_point<std::chrono::steady_clock> start, end;
-    uint64_t thread_counts[] = {8, 192};
-            for(int i = 25; i < 26; i++){
-    for(int j = 0; j < 1; j++){
-        printf("%lu threads:\n", thread_counts[j]);
-        for(int k = 12; k < 13; k++){
-            printf("%u blocks per slice\n", 1 << k);
+    // uint64_t thread_counts[] = {192};
+    uint64_t thread_counts[] = {std::thread::hardware_concurrency()};
+    for(int i = codim; i < codim + 1; i++){
+        for(int j = 0; j < 1; j++){
+            printf("%lu threads:\n", thread_counts[j]);
+            for(int k = 12; k < 13; k++){
+                printf("%u blocks per slice\n", 1 << k);
                 start = std::chrono::steady_clock::now();
-                std::vector<uint64_t> gens = findcode2<x4a_icx_zmm_block<any> >(5, i, 1 << k, thread_counts[j], false, true, false);
+                std::vector<uint64_t> gens;
+                switch(ty){
+                    case any:
+                        gens = findcode2<x4a_icx_zmm_block<any> >(distance, i, 1 << k, thread_counts[j], print_gens, evenize, print_times);
+                        break;
+                    case self_orthogonal:
+                        gens = findcode2<x4a_icx_zmm_block<self_orthogonal> >(distance, i, 1 << k, thread_counts[j], print_gens, evenize, print_times);
+                        break;
+                }
                 end = std::chrono::steady_clock::now();
                 printf("Generators for codim %u: %zu\n", i, gens.size());
                 printf("%2.3f ms\n", ((double)std::chrono::duration_cast<std::chrono::microseconds>(end - start).count()) / (1000));
